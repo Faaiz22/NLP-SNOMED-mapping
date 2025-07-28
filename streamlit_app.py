@@ -20,7 +20,7 @@ warnings.filterwarnings('ignore')
 # Import custom modules
 from data_processor import DataProcessor
 from models import MappingClassifier, ConfidenceEstimator, SemanticRetrieval
-from quality_auditor import QualityAuditor
+from quality_auditor import SNOMEDQualityAuditor
 from pattern_analyzer import PatternAnalyzer
 
 # Page configuration
