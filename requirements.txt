@@ -1,0 +1,17 @@
+streamlit
+pandas
+numpy
+scikit-learn
+plotly
+seaborn
+matplotlib
+transformers
+torch
+sentence-transformers
+fuzzywuzzy
+python-Levenshtein
+scipy
+umap-learn
+altair
+wordcloud
+textdistance
