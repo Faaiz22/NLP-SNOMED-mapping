@@ -39,7 +39,8 @@ class MappingClassifier:
         # Text features using TF-IDF
         text_corpus = self.df['dx'].fillna('').tolist()
         # Fit and transform TF-IDF
-        tfidf_features = self.tfidf_vectorizer.fit_transform(text_corpus).to_array()
+        # Corrected typo: .to_array() -> .toarray()
+        tfidf_features = self.tfidf_vectorizer.fit_transform(text_corpus).toarray()
         
         # Numerical features - these columns are now guaranteed to exist in self.df
         numerical_feature_cols = [
@@ -132,7 +133,7 @@ class MappingClassifier:
         
         # Prepare features for this specific classification task
         text_corpus = df_filtered['dx'].fillna('').tolist()
-        tfidf_features = self.tfidf_vectorizer.fit_transform(text_corpus).to_array()
+        tfidf_features = self.tfidf_vectorizer.fit_transform(text_corpus).toarray()
         
         numerical_feature_cols = [
             'dx_length', 'dx_word_count', 'has_numbers',
@@ -306,4 +307,3 @@ class SemanticRetrieval:
         # Filter out the original diagnosis
         filtered_results = [r for r in results if r['snomed_ct_code'] != snomed_code]
         return filtered_results
-
