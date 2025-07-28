@@ -1,7 +1,8 @@
 import pandas as pd
 import numpy as np
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
+from collections import defaultdict
 
 class DataProcessor:
     """
@@ -14,13 +15,14 @@ class DataProcessor:
         
     def clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Clean and preprocess the SNOMED mapping dataset
+        Clean and preprocess the SNOMED mapping dataset.
+        This method now also engineers features and ensures all necessary columns are present.
         
         Args:
             df: Raw dataframe from CSV
             
         Returns:
-            Cleaned dataframe
+            Cleaned and feature-engineered dataframe
         """
         self.original_data = df.copy()
         
@@ -28,13 +30,24 @@ class DataProcessor:
         df_clean = df.copy()
         df_clean.columns = [col.lower().replace(' ', '_').replace('-', '_') for col in df_clean.columns]
         
-        # Handle missing values
-        df_clean = df_clean.fillna(0)
+        # Handle missing values - fill with 0 for numerical columns, empty string for text
+        for col in ['dx', 'abbreviation', 'snomed_ct_code']:
+            if col in df_clean.columns:
+                df_clean[col] = df_clean[col].fillna('')
         
+        # Fill numerical dataset columns and 'total' with 0 if NaN
+        dataset_cols = ['cpsc', 'cpsc_extra', 'stpetersburg', 'ptb', 'ptb_xl', 'georgia', 'total']
+        for col in dataset_cols:
+            if col in df_clean.columns:
+                df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').fillna(0)
+            else:
+                # If a column is missing, add it with zeros to prevent KeyError later
+                df_clean[col] = 0
+
         # Clean diagnosis text
         df_clean['dx'] = df_clean['dx'].str.strip()
         df_clean['dx'] = df_clean['dx'].str.lower()
-        df_clean['dx'] = df_clean['dx'].str.replace(r'[^\w\s]', '', regex=True)
+        df_clean['dx'] = df_clean['dx'].str.replace(r'[^\\w\\s]', '', regex=True) # Keep alphanumeric and spaces
         
         # Clean abbreviations
         df_clean['abbreviation'] = df_clean['abbreviation'].str.strip()
@@ -42,180 +55,64 @@ class DataProcessor:
         # Ensure SNOMED codes are strings
         df_clean['snomed_ct_code'] = df_clean['snomed_ct_code'].astype(str)
         
-        # Convert numeric columns
-        numeric_cols = ['cpsc', 'cpsc_extra', 'st_petersburg', 'ptb', 'ptb_xl', 'georgia', 'total']
-        for col in numeric_cols:
-            if col in df_clean.columns:
-                df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').fillna(0).astype(int)
-        
-        # Remove rows with empty diagnosis or SNOMED code
-        df_clean = df_clean[(df_clean['dx'] != '') & (df_clean['snomed_ct_code'] != '')]
-        
+        # Now, engineer additional features directly into this DataFrame
+        df_clean = self._engineer_features(df_clean)
+
         self.processed_data = df_clean
         return df_clean
-    
-    def extract_features(self, df: pd.DataFrame) -> pd.DataFrame:
+
+    def _engineer_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Extract additional features for machine learning
-        
-        Args:
-            df: Processed dataframe
-            
-        Returns:
-            Dataframe with additional features
+        Engineers additional features for the DataFrame.
+        These features are expected by the ML models.
         """
-        df_features = df.copy()
-        
         # Text features
-        df_features['dx_length'] = df_features['dx'].str.len()
-        df_features['dx_word_count'] = df_features['dx'].str.split().str.len()
-        df_features['has_numbers'] = df_features['dx'].str.contains(r'\d', regex=True).astype(int)
-        
+        df['dx_length'] = df['dx'].apply(len)
+        df['dx_word_count'] = df['dx'].apply(lambda x: len(x.split()))
+        df['has_numbers'] = df['dx'].apply(lambda x: bool(re.search(r'\d', x))).astype(int)
+
         # SNOMED code features
-        df_features['snomed_length'] = df_features['snomed_ct_code'].str.len()
-        df_features['snomed_numeric'] = pd.to_numeric(df_features['snomed_ct_code'], errors='coerce').notna().astype(int)
-        
+        df['snomed_length'] = df['snomed_ct_code'].apply(len)
+        df['snomed_numeric'] = df['snomed_ct_code'].apply(lambda x: x.isdigit()).astype(int)
+
         # Dataset distribution features
-        dataset_cols = ['cpsc', 'cpsc_extra', 'st_petersburg', 'ptb', 'ptb_xl', 'georgia']
-        df_features['dataset_count'] = (df_features[dataset_cols] > 0).sum(axis=1)
-        df_features['max_dataset_value'] = df_features[dataset_cols].max(axis=1)
-        df_features['dataset_variance'] = df_features[dataset_cols].var(axis=1)
+        dataset_cols = ['cpsc', 'cpsc_extra', 'stpetersburg', 'ptb', 'ptb_xl', 'georgia']
         
-        # Frequency features
-        df_features['log_total'] = np.log1p(df_features['total'])
-        df_features['is_rare'] = (df_features['total'] <= 10).astype(int)
-        df_features['is_common'] = (df_features['total'] >= 100).astype(int)
-        
-        return df_features
-    
-    def create_text_corpus(self, df: pd.DataFrame) -> List[str]:
-        """
-        Create text corpus for semantic analysis
-        
-        Args:
-            df: Processed dataframe
-            
-        Returns:
-            List of diagnosis texts
-        """
-        corpus = []
-        for _, row in df.iterrows():
-            # Combine diagnosis and abbreviation for richer context
-            text = f"{row['dx']} {row['abbreviation']}"
-            corpus.append(text)
-        return corpus
-    
-    def get_dataset_statistics(self, df: pd.DataFrame) -> Dict:
-        """
-        Calculate comprehensive dataset statistics
-        
-        Args:
-            df: Processed dataframe
-            
-        Returns:
-            Dictionary with statistics
-        """
-        stats = {}
-        
-        # Basic statistics
-        stats['total_diagnoses'] = len(df)
-        stats['unique_snomed_codes'] = df['snomed_ct_code'].nunique()
-        stats['total_cases'] = df['total'].sum()
-        stats['mean_cases'] = df['total'].mean()
-        stats['median_cases'] = df['total'].median()
-        
-        # Dataset distribution
-        dataset_cols = ['cpsc', 'cpsc_extra', 'st_petersburg', 'ptb', 'ptb_xl', 'georgia']
-        stats['dataset_totals'] = {}
+        # Ensure these columns exist before attempting operations
         for col in dataset_cols:
-            stats['dataset_totals'][col] = df[col].sum()
-        
-        # Frequency distribution
-        stats['frequency_distribution'] = {
-            'rare_cases_1_10': len(df[(df['total'] >= 1) & (df['total'] <= 10)]),
-            'medium_cases_11_100': len(df[(df['total'] >= 11) & (df['total'] <= 100)]),
-            'common_cases_100plus': len(df[df['total'] > 100]),
-            'zero_cases': len(df[df['total'] == 0])
-        }
-        
-        # Text statistics
-        stats['text_stats'] = {
-            'avg_diagnosis_length': df['dx'].str.len().mean(),
-            'avg_word_count': df['dx'].str.split().str.len().mean(),
-            'diagnoses_with_numbers': df['dx'].str.contains(r'\d', regex=True).sum()
-        }
-        
-        return stats
-    
-    def normalize_diagnosis_text(self, text: str) -> str:
+            if col not in df.columns:
+                df[col] = 0 # Add missing dataset columns with default 0
+
+        df['dataset_count'] = df[dataset_cols].apply(lambda row: (row > 0).sum(), axis=1)
+        df['max_dataset_value'] = df[dataset_cols].max(axis=1)
+        df['dataset_variance'] = df[dataset_cols].var(axis=1).fillna(0) # Fill NaN for single-value variance
+
+        # Log transform of total cases for better distribution in models
+        df['log_total'] = np.log1p(df['total']) # log1p handles total=0 gracefully
+
+        # Simple rarity/commonality indicators based on total cases
+        total_median = df['total'].median()
+        total_q1 = df['total'].quantile(0.25)
+        total_q3 = df['total'].quantile(0.75)
+
+        df['is_rare'] = (df['total'] < total_q1).astype(int)
+        df['is_common'] = (df['total'] > total_q3).astype(int)
+
+        return df
+
+    def get_medical_term_categories(self, df: pd.DataFrame) -> Dict[str, List[str]]:
         """
-        Normalize diagnosis text for better matching
-        
-        Args:
-            text: Raw diagnosis text
-            
-        Returns:
-            Normalized text
+        Identify and categorize common medical terms or phrases based on patterns.
+        This is an example and can be expanded.
         """
-        # Convert to lowercase
-        text = text.lower().strip()
+        medical_terms = defaultdict(list)
         
-        # Remove special characters but keep spaces and hyphens
-        text = re.sub(r'[^\w\s\-]', '', text)
-        
-        # Normalize whitespace
-        text = re.sub(r'\s+', ' ', text)
-        
-        # Common medical abbreviations standardization
-        abbreviations = {
-            'myocardial infarction': 'mi',
-            'atrial fibrillation': 'af',
-            'ventricular tachycardia': 'vt',
-            'atrioventricular': 'av',
-            'electrocardiogram': 'ecg',
-            'electrocardiographic': 'ecg'
-        }
-        
-        for full_form, abbrev in abbreviations.items():
-            text = text.replace(full_form, abbrev)
-        
-        return text.strip()
-    
-    def identify_medical_terms(self, df: pd.DataFrame) -> Dict[str, List[str]]:
-        """
-        Identify common medical terms and patterns
-        
-        Args:
-            df: Processed dataframe
-            
-        Returns:
-            Dictionary categorizing medical terms
-        """
-        medical_terms = {
-            'cardiac_conditions': [],
-            'rhythm_disorders': [],
-            'conduction_blocks': [],
-            'ischemic_conditions': [],
-            'anatomical_terms': []
-        }
-        
-        # Define patterns for different categories
+        # Example patterns for categorization
         patterns = {
-            'cardiac_conditions': [
-                r'.*heart.*', r'.*cardiac.*', r'.*myocardial.*', r'.*coronary.*'
-            ],
-            'rhythm_disorders': [
-                r'.*rhythm.*', r'.*tachycardia.*', r'.*fibrillation.*', r'.*flutter.*'
-            ],
-            'conduction_blocks': [
-                r'.*block.*', r'.*bundle.*', r'.*fascicular.*'
-            ],
-            'ischemic_conditions': [
-                r'.*ischemia.*', r'.*infarction.*', r'.*ischemic.*'
-            ],
-            'anatomical_terms': [
-                r'.*atrial.*', r'.*ventricular.*', r'.*left.*', r'.*right.*', r'.*anterior.*', r'.*inferior.*'
-            ]
+            'cardiac': [r'cardiac', r'heart', r'atrial', r'ventricular', r'myocardial', r'ecg', r'arrhythmia'],
+            'pulmonary': [r'lung', r'pulmonary', r'respiratory', r'pneumonia', r'asthma'],
+            'neurological': [r'brain', r'neuro', r'stroke', r'epilepsy', r'headache'],
+            'vascular': [r'vascular', r'artery', r'vein', r'thrombosis', r'embolism']
         }
         
         for category, pattern_list in patterns.items():
@@ -229,9 +126,12 @@ class DataProcessor:
         
         return medical_terms
     
+    # The create_feature_matrix is now primarily for generating the numpy array for ML models,
+    # assuming the DataFrame already has the necessary columns from _engineer_features.
     def create_feature_matrix(self, df: pd.DataFrame) -> Tuple[np.ndarray, List[str]]:
         """
-        Create feature matrix for machine learning
+        Create feature matrix for machine learning.
+        Assumes df already contains engineered features from _engineer_features.
         
         Args:
             df: Processed dataframe with features
@@ -247,14 +147,16 @@ class DataProcessor:
             'log_total', 'is_rare', 'is_common'
         ]
         
-        # Dataset distribution features
-        dataset_features = ['cpsc', 'cpsc_extra', 'st_petersburg', 'ptb', 'ptb_xl', 'georgia']
+        # Dataset distribution features (ensure these are present and correctly named)
+        dataset_features = ['cpsc', 'cpsc_extra', 'stpetersburg', 'ptb', 'ptb_xl', 'georgia']
         
         all_features = numerical_features + dataset_features
         
-        # Select available features
+        # Select available features - this is a safeguard, all should be present now
         available_features = [f for f in all_features if f in df.columns]
         
         feature_matrix = df[available_features].values
         
         return feature_matrix, available_features
+
+
