@@ -122,7 +122,7 @@ def show_data_overview(df, processor):
     dataset_totals = {
         'CPSC': df['cpsc'].sum(),
         'CPSC-Extra': df['cpsc_extra'].sum(),
-        'StPetersburg': df['st_petersburg'].sum(),
+        'StPetersburg': df['stpetersburg'].sum(),
         'PTB': df['ptb'].sum(),
         'PTB-XL': df['ptb_xl'].sum(),
         'Georgia': df['georgia'].sum()
@@ -222,7 +222,7 @@ def show_code_suggestions(df, processor):
                     st.write(f"**Semantic Similarity:** {suggestion['similarity']:.3f}")
                     
                     # Dataset occurrence
-                    datasets = ['cpsc', 'cpsc_extra', 'st_petersburg', 'ptb', 'ptb_xl', 'georgia']
+                    datasets = ['cpsc', 'cpsc_extra', 'stpetersburg', 'ptb', 'ptb_xl', 'georgia']
                     occurrence = [suggestion[ds] for ds in datasets]
                     if sum(occurrence) > 0:
                         fig = px.bar(
@@ -444,8 +444,9 @@ def show_semantic_retrieval(df, processor):
                     
                     # Create a simple visualization of dataset distribution
                     datasets = ['CPSC', 'CPSC-Extra', 'StPetersburg', 'PTB', 'PTB-XL', 'Georgia']
-                    values = [result['cpsc'], result['cpsc_extra'], result['st_petersburg'], 
-                             result['ptb'], result['ptb_xl'], result['georgia']]
+                    values = [result['cpsc'], result['cpsc_extra'], result['stpetersburg'],
+
+
                     
                     if sum(values) > 0:
                         fig = px.bar(x=datasets, y=values, title="Dataset Distribution")
