@@ -1,406 +1,460 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import seaborn as sns
+import matplotlib.pyplot as plt
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.metrics import classification_report, accuracy_score, mean_squared_error
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC
+from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, accuracy_score
 import warnings
 warnings.filterwarnings('ignore')
 
-class MappingClassifier:
-    """
-    Multi-class classifier for SNOMED mapping tasks
-    """
-    
-    def __init__(self, df: pd.DataFrame):
-        self.df = df
-        self.model = None
-        self.scaler = StandardScaler()
-        self.label_encoder = LabelEncoder()
-        self.tfidf_vectorizer = TfidfVectorizer(max_features=1000, stop_words='english')
-        self.feature_names = []
-    
-    def prepare_training_data(self):
-        """
-        Prepare training data with simulated labels for demonstration
-        Since the dataset doesn't include mapping status, we simulate it based on patterns
-        """
-        # Extract features
-        features = []
-        
-        # Text features using TF-IDF
-        text_corpus = self.df['dx'].fillna('').tolist()
-        tfidf_features = self.tfidf_vectorizer.fit_transform(text_corpus).toarray()
-        
-        # Numerical features
-        numerical_features = []
-        for _, row in self.df.iterrows():
-            num_features = [
-                len(str(row['dx'])),  # diagnosis length
-                len(str(row['snomed_ct_code'])),  # SNOMED code length
-                row['total'],  # total cases
-                row['cpsc'] + row['cpsc_extra'] + row['st_petersburg'] + 
-                row['ptb'] + row['ptb_xl'] + row['georgia'],  # sum across datasets
-                (np.array([row['cpsc'], row['cpsc_extra'], row['st_petersburg'], 
-                          row['ptb'], row['ptb_xl'], row['georgia']]) > 0).sum()  # number of datasets
-            ]
-            numerical_features.append(num_features)
-        
-        numerical_features = np.array(numerical_features)
-        
-        # Combine features
-        X = np.hstack([tfidf_features, numerical_features])
-        
-        # Simulate mapping status labels based on heuristics
-        y_simulated = []
-        for _, row in self.df.iterrows():
-            # Simulate labels based on total cases and dataset distribution
-            if row['total'] > 100:  # High confidence - accepted
-                label = 'accepted'
-            elif row['total'] < 5:  # Low confidence - needs review
-                label = 'needs_review'
-            elif row['total'] == 0:  # Zero cases - rejected
-                label = 'rejected'
-            else:  # Medium cases - could be any
-                # Add some randomness based on dataset distribution
-                dataset_count = (np.array([row['cpsc'], row['cpsc_extra'], row['st_petersburg'], 
-                                         row['ptb'], row['ptb_xl'], row['georgia']]) > 0).sum()
-                if dataset_count >= 3:
-                    label = 'accepted'
-                elif dataset_count == 1:
-                    label = 'needs_review'
-                else:
-                    label = 'accepted'
-            y_simulated.append(label)
-        
-        return X, np.array(y_simulated)
-    
-    def train_model(self, X, y, model_type='rf'):
-        """
-        Train the classification model
-        """
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        
-        # Scale features
-        X_train_scaled = self.scaler.fit_transform(X_train)
-        X_test_scaled = self.scaler.transform(X_test)
-        
-        # Initialize model
-        if model_type == 'rf':
-            self.model = RandomForestClassifier(n_estimators=100, random_state=42)
-        elif model_type == 'lr':
-            self.model = LogisticRegression(random_state=42, max_iter=1000)
-        else:
-            self.model = SVC(random_state=42, probability=True)
-        
-        # Train model
-        self.model.fit(X_train_scaled, y_train)
-        
-        # Evaluate
-        y_pred = self.model.predict(X_test_scaled)
-        accuracy = accuracy_score(y_test, y_pred)
-        report = classification_report(y_test, y_pred)
-        
-        return accuracy, report
-    
-    def predict_mapping_status(self, diagnosis_text, snomed_code):
-        """
-        Predict mapping status for a new diagnosis-SNOMED pair
-        """
-        if self.model is None:
-            return None
-        
-        # Prepare features (simplified for demo)
-        text_features = self.tfidf_vectorizer.transform([diagnosis_text]).toarray()
-        num_features = np.array([[len(diagnosis_text), len(snomed_code), 0, 0, 1]])
-        
-        X = np.hstack([text_features, num_features])
-        X_scaled = self.scaler.transform(X)
-        
-        prediction = self.model.predict(X_scaled)[0]
-        probability = self.model.predict_proba(X_scaled)[0].max()
-        
-        return prediction, probability
-    
-    def get_feature_importance(self):
-        """
-        Get feature importance for RandomForest models
-        """
-        if self.model is None or not hasattr(self.model, 'feature_importances_'):
-            return None
-        
-        # Get TF-IDF feature names
-        tfidf_features = self.tfidf_vectorizer.get_feature_names_out()
-        numerical_feature_names = ['dx_length', 'snomed_length', 'total_cases', 'sum_datasets', 'num_datasets']
-        
-        all_feature_names = list(tfidf_features) + numerical_feature_names
-        
-        importance_df = pd.DataFrame({
-            'feature': all_feature_names,
-            'importance': self.model.feature_importances_
-        }).sort_values('importance', ascending=False).head(20)
-        
-        return importance_df
-    
-    def train_code_classifier(self, target_code):
-        """
-        Train a binary classifier to predict if a diagnosis maps to a specific SNOMED code
-        """
-        # Prepare binary labels
-        y_binary = (self.df['snomed_ct_code'] == target_code).astype(int)
-        
-        # Get features
-        X, _ = self.prepare_training_data()
-        
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(X, y_binary, test_size=0.2, random_state=42)
-        
-        # Scale features
-        X_train_scaled = self.scaler.fit_transform(X_train)
-        X_test_scaled = self.scaler.transform(X_test)
-        
-        # Train binary classifier
-        binary_model = RandomForestClassifier(n_estimators=100, random_state=42)
-        binary_model.fit(X_train_scaled, y_train)
-        
-        # Evaluate
-        y_pred = binary_model.predict(X_test_scaled)
-        accuracy = accuracy_score(y_test, y_pred)
-        
-        return accuracy
+# Import custom modules
+from data_processor import DataProcessor
+from models import MappingClassifier, ConfidenceEstimator, SemanticRetrieval
+from quality_auditor import SNOMEDQualityAuditor # Corrected import: Changed QualityAuditor to SNOMEDQualityAuditor
+# from pattern_analyzer import PatternAnalyzer # Commented out as this file/class might be missing or incomplete
 
+# Page configuration
+st.set_page_config(
+    page_title="SNOMED Mapping Analysis System",
+    page_icon="🏥",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-class ConfidenceEstimator:
-    """
-    Regression model to estimate mapping confidence scores
-    """
-    
-    def __init__(self, df: pd.DataFrame):
-        self.df = df
-        self.model = None
-        self.scaler = StandardScaler()
-        self.tfidf_vectorizer = TfidfVectorizer(max_features=500, stop_words='english')
-    
-    def prepare_confidence_features(self):
-        """
-        Prepare features for confidence estimation
-        """
-        # Text similarity features
-        text_corpus = self.df['dx'].fillna('').tolist()
-        tfidf_matrix = self.tfidf_vectorizer.fit_transform(text_corpus).toarray()
-        
-        # Calculate self-similarity as a baseline confidence measure
-        confidence_scores = []
-        
-        for i, row in self.df.iterrows():
-            # Confidence based on frequency, dataset distribution, and text characteristics
-            freq_score = min(row['total'] / self.df['total'].max(), 1.0)  # Normalized frequency
-            
-            # Dataset consistency score
-            dataset_values = [row['cpsc'], row['cpsc_extra'], row['st_petersburg'], 
-                            row['ptb'], row['ptb_xl'], row['georgia']]
-            non_zero_datasets = sum(1 for x in dataset_values if x > 0)
-            consistency_score = non_zero_datasets / 6.0  # Normalized by total datasets
-            
-            # Text quality score (longer, more specific diagnoses get higher scores)
-            text_quality = min(len(row['dx']) / 50.0, 1.0)  # Normalized text length
-            
-            # Combined confidence score
-            confidence = (freq_score * 0.5 + consistency_score * 0.3 + text_quality * 0.2)
-            confidence_scores.append(confidence)
-        
-        return tfidf_matrix, np.array(confidence_scores)
-    
-    def train_confidence_model(self):
-        """
-        Train regression model for confidence estimation
-        """
-        X, y = self.prepare_confidence_features()
-        
-        # Add numerical features
-        numerical_features = []
-        for _, row in self.df.iterrows():
-            num_features = [
-                row['total'],
-                len(str(row['dx'])),
-                len(str(row['snomed_ct_code'])),
-                (np.array([row['cpsc'], row['cpsc_extra'], row['st_petersburg'], 
-                          row['ptb'], row['ptb_xl'], row['georgia']]) > 0).sum()
-            ]
-            numerical_features.append(num_features)
-        
-        numerical_features = np.array(numerical_features)
-        X_combined = np.hstack([X, numerical_features])
-        
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(X_combined, y, test_size=0.2, random_state=42)
-        
-        # Scale features
-        X_train_scaled = self.scaler.fit_transform(X_train)
-        X_test_scaled = self.scaler.transform(X_test)
-        
-        # Train model
-        self.model = RandomForestRegressor(n_estimators=100, random_state=42)
-        self.model.fit(X_train_scaled, y_train)
-        
-        # Evaluate
-        y_pred = self.model.predict(X_test_scaled)
-        mse = mean_squared_error(y_test, y_pred)
-        
-        return mse
-    
-    def estimate_confidence(self, diagnosis_text, top_k=10):
-        """
-        Estimate confidence for a given diagnosis against all SNOMED codes
-        """
-        # Find similar diagnoses
-        similarities = []
-        
-        for _, row in self.df.iterrows():
-            # Simple text similarity (can be enhanced with embeddings)
-            common_words = set(diagnosis_text.lower().split()) & set(row['dx'].lower().split())
-            similarity = len(common_words) / max(len(diagnosis_text.split()), len(row['dx'].split()))
-            
-            similarities.append({
-                'dx': row['dx'],
-                'snomed_ct_code': row['snomed_ct_code'],
-                'similarity': similarity,
-                'total': row['total'],
-                'confidence_score': similarity * (1 + np.log1p(row['total']) / 10)  # Boost by frequency
-            })
-        
-        # Sort by confidence and return top-k
-        similarities.sort(key=lambda x: x['confidence_score'], reverse=True)
-        return pd.DataFrame(similarities[:top_k])
+@st.cache_data
+def load_data():
+    """Load and cache the SNOMED dataset"""
+    try:
+        # Load the CSV file
+        df = pd.read_csv('SNOMED_mappings_unscored.csv', delimiter=';')
+        processor = DataProcessor()
+        df_processed = processor.clean_data(df)
 
+        # Temporary debugging line: Print columns after processing
+        # This helps verify the exact column names after DataProcessor cleans them
+        st.write("Columns after data processing:", df_processed.columns.tolist())
 
-class SemanticRetrieval:
-    """
-    Semantic retrieval system for SNOMED code suggestions
-    """
+        return df_processed, processor
+    except FileNotFoundError:
+        st.error("SNOMED_mappings_unscored.csv file not found. Please ensure the file is in the same directory.")
+        return None, None
+    except Exception as e:
+        st.error(f"Error loading data: {str(e)}")
+        return None, None
+
+def main():
+    st.title("🏥 SNOMED Mapping Analysis System")
+    st.markdown("**Comprehensive analysis and classification of medical diagnosis mappings**")
     
-    def __init__(self, df: pd.DataFrame):
-        self.df = df
-        self.tfidf_vectorizer = TfidfVectorizer(
-            max_features=1000,
-            stop_words='english',
-            ngram_range=(1, 2),
-            min_df=1
+    # Load data
+    df, processor = load_data()
+    if df is None:
+        return
+    
+    # Sidebar
+    st.sidebar.header("Navigation")
+    page = st.sidebar.selectbox(
+        "Select Analysis Type",
+        [
+            "📊 Data Overview",
+            "🔍 Search & Browse",
+            "🧠 Code Suggestions", 
+            "📈 Pattern Analysis", # This will be skipped if PatternAnalyzer is commented out
+            "🔬 Data Quality Audit",
+            "🤖 ML Classification",
+            "📉 Confidence Scoring",
+            "🎯 Semantic Retrieval"
+        ]
+    )
+    
+    # Dataset filters
+    st.sidebar.header("Dataset Filters")
+    # Note: 'StPetersburg' will become 'stpetersburg' after DataProcessor.clean_data()
+    datasets = ['CPSC', 'CPSC-Extra', 'StPetersburg', 'PTB', 'PTB-XL', 'Georgia']
+    selected_datasets = st.sidebar.multiselect(
+        "Select Datasets",
+        datasets,
+        default=datasets
+    )
+    
+    # Filter data based on selection
+    # Ensure these column names match the output of DataProcessor.clean_data()
+    dataset_columns = [col.lower().replace('-', '_').replace('stpetersburg', 'stpetersburg') for col in selected_datasets]
+    # The .replace('stpetersburg', 'stpetersburg') is redundant but keeps the pattern for clarity if other specific renames are needed.
+    
+    # Main content based on page selection
+    if "Data Overview" in page:
+        show_data_overview(df, processor)
+    elif "Search & Browse" in page:
+        show_search_browse(df, processor, selected_datasets)
+    elif "Code Suggestions" in page:
+        show_code_suggestions(df, processor)
+    elif "Pattern Analysis" in page:
+        # This section requires pattern_analyzer.py with specific methods.
+        # It's commented out to prevent errors if the file/methods are missing.
+        # Uncomment and ensure pattern_analyzer.py is correctly implemented if you want this feature.
+        # show_pattern_analysis(df, processor, selected_datasets)
+        st.info("Pattern Analysis module is currently disabled or incomplete. Please ensure 'pattern_analyzer.py' is correctly implemented and uncommented.")
+    elif "Data Quality Audit" in page:
+        show_quality_audit(df, processor)
+    elif "ML Classification" in page:
+        show_ml_classification(df, processor)
+    elif "Confidence Scoring" in page:
+        show_confidence_scoring(df, processor)
+    elif "Semantic Retrieval" in page:
+        show_semantic_retrieval(df, processor)
+
+def show_data_overview(df, processor):
+    """Display data overview and statistics"""
+    st.header("📊 Data Overview")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Total Diagnoses", len(df))
+    with col2:
+        st.metric("Unique SNOMED Codes", df['snomed_ct_code'].nunique())
+    with col3:
+        st.metric("Total Cases", df['total'].sum())
+    with col4:
+        st.metric("Avg Cases per Diagnosis", f"{df['total'].mean():.1f}")
+    
+    # Dataset distribution
+    st.subheader("Dataset Distribution")
+    dataset_totals = {
+        'CPSC': df['cpsc'].sum(),
+        'CPSC-Extra': df['cpsc_extra'].sum(),
+        'StPetersburg': df['stpetersburg'].sum(), # Corrected column name: st_petersburg -> stpetersburg
+        'PTB': df['ptb'].sum(),
+        'PTB-XL': df['ptb_xl'].sum(),
+        'Georgia': df['georgia'].sum()
+    }
+    
+    fig = px.pie(
+        values=list(dataset_totals.values()),
+        names=list(dataset_totals.keys()),
+        title="Distribution of Cases by Dataset"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Top diagnoses
+    st.subheader("Top 20 Most Frequent Diagnoses")
+    top_diagnoses = df.nlargest(20, 'total')[['dx', 'abbreviation', 'total']]
+    
+    fig = px.bar(
+        top_diagnoses,
+        x='total',
+        y='dx',
+        orientation='h',
+        title="Most Frequent Diagnoses"
+    )
+    fig.update_layout(height=600)
+    st.plotly_chart(fig, use_container_width=True)
+
+def show_search_browse(df, processor, selected_datasets):
+    """Search and browse functionality"""
+    st.header("🔍 Search & Browse")
+    
+    # Search functionality
+    search_term = st.text_input("Search diagnoses, SNOMED codes, or abbreviations:")
+    
+    if search_term:
+        mask = (
+            df['dx'].str.contains(search_term, case=False, na=False) |
+            df['snomed_ct_code'].astype(str).str.contains(search_term, case=False, na=False) |
+            df['abbreviation'].str.contains(search_term, case=False, na=False)
         )
-        self.tfidf_matrix = None
-        self._build_index()
+        filtered_df = df[mask]
+    else:
+        filtered_df = df
     
-    def _build_index(self):
-        """
-        Build TF-IDF index for semantic search
-        """
-        # Prepare text corpus
-        corpus = []
-        for _, row in self.df.iterrows():
-            # Combine diagnosis text with abbreviation for richer context
-            text = f"{row['dx']} {row['abbreviation']}"
-            corpus.append(text)
-        
-        # Build TF-IDF matrix
-        self.tfidf_matrix = self.tfidf_vectorizer.fit_transform(corpus)
+    # Display options
+    col1, col2 = st.columns(2)
+    with col1:
+        top_n = st.slider("Number of results to show", 10, 100, 25)
+    with col2:
+        sort_by = st.selectbox("Sort by", ['total', 'dx', 'snomed_ct_code'])
     
-    def semantic_search(self, query, top_k=10):
-        """
-        Perform semantic search using TF-IDF and cosine similarity
-        """
-        # Transform query
-        query_vector = self.tfidf_vectorizer.transform([query])
-        
-        # Calculate similarities
-        similarities = cosine_similarity(query_vector, self.tfidf_matrix).flatten()
-        
-        # Get top-k results
-        top_indices = similarities.argsort()[-top_k:][::-1]
-        
-        results = []
-        for idx in top_indices:
-            row = self.df.iloc[idx]
-            results.append({
-                'dx': row['dx'],
-                'snomed_ct_code': row['snomed_ct_code'],
-                'abbreviation': row['abbreviation'],
-                'total': row['total'],
-                'similarity_score': similarities[idx],
-                'cpsc': row['cpsc'],
-                'cpsc_extra': row['cpsc_extra'],
-                'st_petersburg': row['st_petersburg'],
-                'ptb': row['ptb'],
-                'ptb_xl': row['ptb_xl'],
-                'georgia': row['georgia']
-            })
-        
-        return results
+    # Display results
+    display_df = filtered_df.nlargest(top_n, 'total') if sort_by == 'total' else filtered_df.head(top_n)
     
-    def suggest_codes(self, diagnosis_text, top_k=5):
-        """
-        Suggest SNOMED codes for a new diagnosis
-        """
-        # Use semantic search
-        search_results = self.semantic_search(diagnosis_text, top_k)
+    st.dataframe(
+        display_df[['dx', 'snomed_ct_code', 'abbreviation', 'total'] + 
+                  [col.lower().replace('-', '_').replace('stpetersburg', 'stpetersburg') for col in selected_datasets]],
+        use_container_width=True
+    )
+    
+    # Visualization of search results
+    if not filtered_df.empty and len(filtered_df) <= 50:
+        st.subheader("Frequency Visualization")
+        fig = px.bar(
+            display_df.head(20),
+            x='abbreviation',
+            y='total',
+            hover_data=['dx'],
+            title=f"Top {min(20, len(display_df))} Results"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+def show_code_suggestions(df, processor):
+    """SNOMED code suggestion system"""
+    st.header("🧠 SNOMED Code Suggestions")
+    
+    st.markdown("Enter a diagnosis description to get suggested SNOMED codes based on semantic similarity.")
+    
+    # Input for new diagnosis
+    new_diagnosis = st.text_input("Enter diagnosis description:")
+    
+    if new_diagnosis:
+        # Initialize semantic retrieval system
+        retrieval_system = SemanticRetrieval(df)
+        suggestions = retrieval_system.suggest_codes(new_diagnosis, top_k=5)
         
-        # Enhance with additional features
-        suggestions = []
-        for result in search_results:
-            # Calculate additional similarity metrics
-            word_overlap = self._calculate_word_overlap(diagnosis_text, result['dx'])
-            frequency_boost = np.log1p(result['total']) / 10.0
-            
-            # Combined similarity score
-            combined_similarity = (
-                result['similarity_score'] * 0.7 +
-                word_overlap * 0.2 +
-                frequency_boost * 0.1
+        st.subheader("Top 5 Suggested SNOMED Codes")
+        
+        for i, suggestion in enumerate(suggestions, 1):
+            with st.expander(f"#{i} - {suggestion['abbreviation']} (Similarity: {suggestion['similarity']:.3f})"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**Diagnosis:** {suggestion['dx']}")
+                    st.write(f"**SNOMED Code:** {suggestion['snomed_ct_code']}")
+                    st.write(f"**Abbreviation:** {suggestion['abbreviation']}")
+                with col2:
+                    st.write(f"**Total Cases:** {suggestion['total']}")
+                    st.write(f"**Semantic Similarity:** {suggestion['similarity']:.3f}")
+                    
+                    # Dataset occurrence
+                    # Corrected column name: st_petersburg -> stpetersburg
+                    datasets_cols = ['cpsc', 'cpsc_extra', 'stpetersburg', 'ptb', 'ptb_xl', 'georgia']
+                    occurrence = [suggestion[ds] for ds in datasets_cols]
+                    if sum(occurrence) > 0:
+                        fig = px.bar(
+                            x=['CPSC', 'CPSC-Extra', 'StPetersburg', 'PTB', 'PTB-XL', 'Georgia'],
+                            y=occurrence,
+                            title="Dataset Occurrence"
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+
+# The show_pattern_analysis function is kept here for reference,
+# but it will only work if pattern_analyzer.py is correctly implemented
+# with the expected methods (find_outliers, analyze_dataset_patterns, etc.)
+def show_pattern_analysis(df, processor, selected_datasets):
+    """Pattern analysis and clustering"""
+    st.header("📈 Pattern Analysis")
+    
+    # analyzer = PatternAnalyzer(df) # Uncomment if PatternAnalyzer is implemented
+    st.warning("Pattern Analysis functionality requires 'pattern_analyzer.py' with specific methods (e.g., find_outliers, analyze_dataset_patterns, perform_clustering).")
+    st.info("Please refer to the prompt for 'pattern_analyzer.py' if you wish to implement this section.")
+    
+    # Example placeholders if PatternAnalyzer were implemented:
+    # # Statistical outliers
+    # st.subheader("Statistical Outliers")
+    # outliers = analyzer.find_outliers()
+    # col1, col2 = st.columns(2)
+    # with col1:
+    #     st.write("**High Frequency Outliers (Z-score > 2)**")
+    #     high_outliers = outliers[outliers['z_score'] > 2].head(10)
+    #     st.dataframe(high_outliers[['dx', 'total', 'z_score']])
+    # with col2:
+    #     st.write("**Low Frequency Outliers (Z-score < -1)**")
+    #     low_outliers = outliers[outliers['z_score'] < -1].head(10)
+    #     st.dataframe(low_outliers[['dx', 'total', 'z_score']])
+    # # Dataset distribution patterns
+    # st.subheader("Dataset Distribution Patterns")
+    # patterns = analyzer.analyze_dataset_patterns()
+    # fig = px.scatter(
+    #     patterns,
+    #     x='dominant_dataset_pct',
+    #     y='total',
+    #     color='dominant_dataset',
+    #     hover_data=['dx'],
+    #     title="Dataset Dominance vs Total Cases",
+    #     log_y=True
+    # )
+    # st.plotly_chart(fig, use_container_width=True)
+    # # Clustering analysis
+    # st.subheader("Clustering Analysis")
+    # clusters = analyzer.perform_clustering(n_clusters=5)
+    # # PCA visualization
+    # pca_data = analyzer.get_pca_visualization(clusters)
+    # fig = px.scatter(
+    #     pca_data,
+    #     x='PC1',
+    #     y='PC2',
+    #     color='cluster',
+    #     hover_data=['dx', 'total'],
+    #     title="PCA Visualization of Diagnosis Clusters"
+    # )
+    # st.plotly_chart(fig, use_container_width=True)
+    # # Cluster characteristics
+    # st.subheader("Cluster Characteristics")
+    # cluster_stats = analyzer.get_cluster_stats(clusters)
+    # st.dataframe(cluster_stats)
+
+def show_quality_audit(df, processor):
+    """Data quality audit"""
+    st.header("🔬 Data Quality Audit")
+    
+    auditor = SNOMEDQualityAuditor(df) # Corrected instantiation: QualityAuditor -> SNOMEDQualityAuditor
+    audit_results = auditor.run_full_audit() # Changed perform_audit to run_full_audit based on quality_auditor.py
+
+    # The audit_results structure from quality_auditor.py's run_full_audit is different
+    # It returns a dictionary with overall results, not specific lists for duplicates etc.
+    # We need to adapt this section to display the audit_results from SNOMEDQualityAuditor.
+    # For now, I'll display a summary and suggest exporting issues.
+
+    st.subheader("Audit Summary")
+    st.write(f"Total issues found: {audit_results.get('total_issues', 'N/A')}")
+    st.write(f"Data Quality Score: {audit_results.get('data_quality_score', 'N/A'):.2f}")
+    
+    st.markdown("For detailed issues, please refer to the audit report generated by `quality_auditor.py` or export issues to CSV.")
+    
+    # You might want to add a button to trigger auditor.export_issues_to_csv() here
+    # if st.button("Export Detailed Issues to CSV"):
+    #     auditor.export_issues_to_csv()
+    #     st.success("Detailed issues exported to snomed_quality_issues.csv")
+
+    # The original audit_results structure (duplicates, invalid_codes, etc.) is not directly
+    # returned by run_full_audit. If you need these specific lists, you'd need to modify
+    # SNOMEDQualityAuditor to expose them or iterate through auditor.issues.
+    # For simplicity, commenting out the tabbed display that expects these specific keys.
+    # tab1, tab2, tab3, tab4 = st.tabs(["Duplicates", "Invalid Codes", "Zero Totals", "Ambiguous Abbreviations"])
+    
+    # with tab1:
+    #     if audit_results['duplicates']:
+    #         st.dataframe(pd.DataFrame(audit_results['duplicates']))
+    #     else:
+    #         st.success("No duplicate diagnoses found!")
+    
+    # ... (similar comments for other tabs)
+
+
+def show_ml_classification(df, processor):
+    """Machine learning classification models"""
+    st.header("🤖 ML Classification Models")
+    
+    st.markdown("Build classification models to predict mapping acceptance and target SNOMED codes.")
+    
+    # Mapping Status Classifier
+    st.subheader("Mapping Status Classifier")
+    st.markdown("*Note: This is a demonstration with simulated labels since the dataset doesn't include mapping status.*")
+    
+    classifier = MappingClassifier(df)
+    
+    # Simulate training data (in real scenario, this would be labeled data)
+    X, y_simulated = classifier.prepare_training_data()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Train Classification Model"):
+            accuracy, report = classifier.train_model(X, y_simulated)
+            st.success(f"Model trained with accuracy: {accuracy:.3f}")
+            st.text("Classification Report:")
+            st.text(report)
+    
+    with col2:
+        # Feature importance
+        if hasattr(classifier, 'model') and classifier.model is not None:
+            importance = classifier.get_feature_importance()
+            fig = px.bar(
+                x=importance['importance'],
+                y=importance['feature'],
+                orientation='h',
+                title="Feature Importance"
             )
-            
-            suggestions.append({
-                **result,
-                'similarity': combined_similarity,
-                'word_overlap': word_overlap
-            })
-        
-        # Sort by combined similarity
-        suggestions.sort(key=lambda x: x['similarity'], reverse=True)
-        return suggestions
+            st.plotly_chart(fig, use_container_width=True)
     
-    def _calculate_word_overlap(self, text1, text2):
-        """
-        Calculate word overlap between two texts
-        """
-        words1 = set(text1.lower().split())
-        words2 = set(text2.lower().split())
-        
-        intersection = len(words1 & words2)
-        union = len(words1 | words2)
-        
-        return intersection / union if union > 0 else 0.0
+    # Multi-class SNOMED Code Classifier
+    st.subheader("SNOMED Code Prediction")
     
-    def find_similar_diagnoses(self, snomed_code, top_k=10):
-        """
-        Find diagnoses similar to those mapped to a specific SNOMED code
-        """
-        # Get diagnoses with the target SNOMED code
-        target_diagnoses = self.df[self.df['snomed_ct_code'] == snomed_code]
+    # Select common codes for demonstration
+    common_codes = df['snomed_ct_code'].value_counts().head(10).index.tolist()
+    
+    target_code = st.selectbox("Select target SNOMED code to predict:", common_codes)
+    
+    if st.button("Train Code Prediction Model"):
+        code_classifier = MappingClassifier(df)
+        accuracy = code_classifier.train_code_classifier(target_code)
+        st.success(f"Code prediction model trained with accuracy: {accuracy:.3f}")
+
+def show_confidence_scoring(df, processor):
+    """Confidence scoring for mappings"""
+    st.header("📉 Confidence Scoring")
+    
+    estimator = ConfidenceEstimator(df)
+    
+    st.markdown("Estimate confidence scores for diagnosis-SNOMED code mappings.")
+    
+    # Select a diagnosis for confidence estimation
+    diagnosis_options = df['dx'].unique()[:50]  # Limit for performance
+    selected_diagnosis = st.selectbox("Select diagnosis:", diagnosis_options)
+    
+    if selected_diagnosis:
+        confidence_scores = estimator.estimate_confidence(selected_diagnosis)
         
-        if target_diagnoses.empty:
-            return []
+        st.subheader(f"Confidence Scores for: {selected_diagnosis}")
         
-        # Use the first diagnosis as query
-        query_diagnosis = target_diagnoses.iloc[0]['dx']
+        # Display top confident mappings
+        top_confident = confidence_scores.head(10)
         
-        # Find similar diagnoses
-        results = self.semantic_search(query_diagnosis, top_k)
+        fig = px.bar(
+            top_confident,
+            x='confidence_score',
+            y='snomed_ct_code',
+            orientation='h',
+            title="Top 10 Confident Mappings",
+            hover_data=['dx']
+        )
+        st.plotly_chart(fig, use_container_width=True)
         
-        # Filter out the original diagnosis
-        filtered_results = [r for r in results if r['snomed_ct_code'] != snomed_code]
+        st.dataframe(top_confident)
+
+def show_semantic_retrieval(df, processor):
+    """Semantic retrieval system"""
+    st.header("🎯 Semantic Retrieval System")
+    
+    retrieval_system = SemanticRetrieval(df)
+    
+    st.markdown("Advanced semantic search using TF-IDF and cosine similarity.")
+    
+    # Query input
+    query = st.text_input("Enter search query:")
+    top_k = st.slider("Number of results:", 1, 20, 10)
+    
+    if query:
+        results = retrieval_system.semantic_search(query, top_k=top_k)
         
-        return filtered_results[:top_k]
+        st.subheader(f"Top {top_k} Semantic Matches")
+        
+        for i, result in enumerate(results, 1):
+            with st.expander(f"#{i} - {result['abbreviation']} (Score: {result['similarity_score']:.3f})"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**Diagnosis:** {result['dx']}")
+                    st.write(f"**SNOMED Code:** {result['snomed_ct_code']}")
+                    st.write(f"**Total Cases:** {result['total']}")
+                with col2:
+                    st.write(f"**Similarity Score:** {result['similarity_score']:.3f}")
+                    
+                    # Create a simple visualization of dataset distribution
+                    datasets = ['CPSC', 'CPSC-Extra', 'StPetersburg', 'PTB', 'PTB-XL', 'Georgia']
+                    # Corrected column name: st_petersburg -> stpetersburg
+                    values = [result['cpsc'], result['cpsc_extra'], result['stpetersburg'], 
+                             result['ptb'], result['ptb_xl'], result['georgia']]
+                    
+                    if sum(values) > 0:
+                        fig = px.bar(x=datasets, y=values, title="Dataset Distribution")
+                        st.plotly_chart(fig, use_container_width=True)
+
+if __name__ == "__main__":
+    main()
